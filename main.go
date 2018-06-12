@@ -10,71 +10,117 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
+	"github.com/urfave/cli"
 )
 
 const (
-	logfile = "./output.log"
+	default_logfile = "./output.log"
 )
 
 var (
 	log = logrus.New()
+	app = cli.NewApp()
 )
 
 func init() {
-	viper.SetConfigName("config")
-	viper.AddConfigPath(".")
-	if err := viper.ReadInConfig(); err != nil {
-		log.Fatalf("Error reading config file, %s", err)
-		os.Exit(0)
-	}
+	// Logging initialization
+	initLogging()
 
+	// Configuration initialization
+	initViper()
+
+	// App initialization
+	initApp()
+}
+
+func initLogging() {
 	log.Formatter = new(logrus.JSONFormatter)
 	log.Formatter = new(logrus.TextFormatter)
 	log.Formatter.(*logrus.TextFormatter).DisableTimestamp = true
 	log.Level = logrus.InfoLevel
+}
 
-	file, err := os.OpenFile(logfile, os.O_CREATE|os.O_WRONLY, 0666)
-	if err == nil {
-		log.Out = file
-	} else {
-		log.Info("Failed to log to file, using default stderr")
+func initViper() {
+	viper.SetConfigName("config")
+	viper.AddConfigPath(".")
+	if err := viper.ReadInConfig(); err != nil {
+		log.Fatalf("Error reading config file, %s", err)
 	}
 }
 
+func initApp() {
+	app.Name = "mstsc"
+	app.Usage = "MotoJin Terminal Services Client"
+	app.Version = "1.0"
+}
+
 func main() {
-	address := getHost(viper.Get("host"))
 
-	log.WithFields(logrus.Fields{
-		"address": address,
-	}).Debug("Func getHost")
-
-	user, password := getUser(viper.Get("user"))
-
-	log.WithFields(logrus.Fields{
-		"user":     user,
-		"password": password,
-	}).Debug("Func getUser")
-
-	if len(password) == 0 {
-		password = getPassword()
-
-		log.WithFields(logrus.Fields{
-			"password": password,
-		}).Debug("Func getPassword")
+	app.Flags = []cli.Flag{
+		cli.StringFlag{
+			Name:  "out",
+			Value: "file",
+			Usage: "log output mode (stdout, stderr)",
+		},
+		cli.StringFlag{
+			Name:  "logfile",
+			Value: default_logfile,
+			Usage: "log output filename",
+		},
+		cli.StringFlag{
+			Name:  "level",
+			Value: "info",
+			Usage: "log level (debug, warn, error, fatal, panic)",
+		},
 	}
 
-	var command string
+	app.Action = func(c *cli.Context) error {
+		// Change CLI config
+		changeLogLevel(c.String("level"))
+		changeLogOut(c.String("out"))
 
-	command = "cmdkey /generic:TERMSRV/" + address + " /user:" + user + " /pass:" + password
-	execCommand(command)
-	time.Sleep(2 * time.Second)
+		file, err := os.OpenFile(c.String("logfile"), os.O_CREATE|os.O_WRONLY, 0666)
+		if err == nil {
+			log.Out = file
+		} else {
+			log.Fatalf("Failed to log to file, using default stderr, %s", err)
+		}
 
-	command = "start mstsc /f /v:" + address
-	execCommand(command)
-	time.Sleep(3 * time.Second)
+		// Start loging
+		log.Info("Start " + app.Name + " app")
 
-	command = "cmdkey /delete:TERMSRV/" + address
-	execCommand(command)
+		// Display input address UI and set remote connect address
+		address := getHost(viper.Get("host"))
+
+		// Display input login UI and set login infomation
+		user, password := getUser(viper.Get("user"))
+
+		// Display input password UI and set password when password is empty
+		if len(password) == 0 {
+			password = getPassword()
+			log.WithFields(logrus.Fields{
+				"password": password,
+			}).Debug("Function getPassword")
+		}
+
+		// Excute remote connect commands
+		execCommand("cmdkey /generic:TERMSRV/" + address + " /user:" + user + " /pass:" + password)
+		time.Sleep(2 * time.Second)
+		execCommand("start mstsc /f /v:" + address)
+		time.Sleep(2 * time.Second)
+		execCommand("cmdkey /delete:TERMSRV/" + address)
+
+		// End logging
+		log.Info("End " + app.Name + " app")
+
+		return nil
+	}
+
+	// Run app
+	err := app.Run(os.Args)
+	if err != nil {
+		log.Fatalf("CLI fatal error, %s", err)
+	}
 }
 
 // Host connects to server
@@ -91,7 +137,7 @@ func getHost(hostList interface{}) (address string) {
 	hostListSlice, ok := hostList.([]interface{})
 	if !ok {
 		log.WithFields(logrus.Fields{}).Error("Argument is not a slice")
-		os.Exit(0)
+		os.Exit(1)
 	}
 
 	var hosts Hosts
@@ -131,20 +177,16 @@ func getHost(hostList interface{}) (address string) {
 	}
 
 	i, _, err := prompt.Run()
-
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"err": err,
-		}).Error("Prompt failed")
-		os.Exit(0)
+		log.Errorf("Prompt failed, %s", err)
+		os.Exit(1)
 	}
 
-	log.WithFields(logrus.Fields{
-		"number": i + 1,
-		"name":   hosts[i].Name,
-	}).Debug("You choose")
-
 	address = hosts[i].Address
+	log.WithFields(logrus.Fields{
+		"address": address,
+	}).Debug("Function getHost")
+
 	return
 }
 
@@ -152,7 +194,7 @@ func getUser(userList interface{}) (user string, password string) {
 	userListSlice, ok := userList.([]interface{})
 	if !ok {
 		log.WithFields(logrus.Fields{}).Error("Argument is not a slice")
-		os.Exit(0)
+		os.Exit(1)
 	}
 
 	var users []string
@@ -173,12 +215,9 @@ func getUser(userList interface{}) (user string, password string) {
 	}
 
 	_, user, err := prompt.Run()
-
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"err": err,
-		}).Error("Prompt failed")
-		os.Exit(0)
+		log.Errorf("Prompt failed, %s", err)
+		os.Exit(1)
 	}
 
 	for _, v := range userListSlice {
@@ -194,6 +233,11 @@ func getUser(userList interface{}) (user string, password string) {
 			}
 		}
 	}
+
+	log.WithFields(logrus.Fields{
+		"user":     user,
+		"password": password,
+	}).Debug("Function getUser")
 
 	return
 }
@@ -234,5 +278,29 @@ func execCommand(command string) {
 		log.WithFields(logrus.Fields{
 			"err": err,
 		}).Warn("Command Exec Error")
+	}
+}
+
+func changeLogLevel(level string) {
+	switch {
+	case level == "debug":
+		log.Level = logrus.DebugLevel
+	case level == "warn":
+		log.Level = logrus.WarnLevel
+	case level == "error":
+		log.Level = logrus.ErrorLevel
+	case level == "fatal":
+		log.Level = logrus.FatalLevel
+	case level == "panic":
+		log.Level = logrus.PanicLevel
+	}
+}
+
+func changeLogOut(out string) {
+	switch {
+	case out == "stdout":
+		log.Out = os.Stdout
+	case out == "stderr":
+		log.Out = os.Stderr
 	}
 }
